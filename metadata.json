@@ -1,0 +1,6 @@
+{
+  "name": "LearnMate AI",
+  "description": "Your personal learning companion. Adaptive AI tutoring platform for New Zealand secondary school students.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
