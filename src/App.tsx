@@ -186,7 +186,7 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-4 text-2xs text-slate-400">
-            <span>Aligned with New Zealand Curriculum (Years 9–13)</span>
+            <span>Year 9 Mathematics · Fractions learning prototype</span>
             <span aria-hidden="true">·</span>
             <span>Formative Learning Prototype</span>
           </div>
