@@ -1080,7 +1080,11 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
                       </button>
                       <button
                         onClick={handleMoveToNextTopic}
-                        className="w-full py-2 px-4 bg-slate-100 text-slate-700 font-semibold text-xs rounded-lg hover:bg-slate-200 transition-colors border border-slate-200 flex items-center justify-center gap-1.5"
+                        disabled={Object.values(conceptRecords).some((record) => record.hasUnresolvedMistake)}
+                        title={Object.values(conceptRecords).some((record) => record.hasUnresolvedMistake)
+                          ? 'Resolve all outstanding learning gaps before moving forward.'
+                          : 'Move to the next topic'}
+                        className="w-full py-2 px-4 bg-slate-100 text-slate-700 font-semibold text-xs rounded-lg hover:bg-slate-200 transition-colors border border-slate-200 flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         <span>Move Forward to Next Topic</span>
                         <ArrowRight className="w-3 h-3 text-slate-400" />
