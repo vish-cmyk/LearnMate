@@ -119,6 +119,34 @@ runTest('0C. Independent assessment remains in its own question sequence', () =>
 });
 
 // ---------------------------------------------------------------------------
+// TEST 0D: Complete independent assessment sequence is server controlled
+// ---------------------------------------------------------------------------
+runTest('0D. Independent assessment completes only after all three assessment questions', () => {
+  const engine = new TutorProgressionEngine({
+    initialPhase: 'independent_assessment',
+    initialQuestionId: 'assess-1',
+  });
+  const sequence = [
+    { id: 'assess-1', answer: '3/5', next: 'assess-2' },
+    { id: 'assess-2', answer: '1/2', next: 'assess-3' },
+    { id: 'assess-3', answer: '1/2', next: null },
+  ];
+
+  for (const item of sequence) {
+    const result = engine.submitAnswer(item.answer, item.id);
+    assert(result.evalResult.isCorrect, `${item.id} must be marked correct`);
+    if (item.next) {
+      assert(engine.advanceToNextQuestion(), `${item.id} should advance to the next assessment question`);
+      assert(engine.activeQuestion.id === item.next, `Next assessment question should be ${item.next}`);
+      assert(engine.assessmentCompleted === false, 'Assessment must remain incomplete before the final question');
+    } else {
+      assert(engine.advanceToNextQuestion() === false, 'No question should remain after the final assessment item');
+      assert(engine.assessmentCompleted === true, 'Assessment should complete only after the final item');
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
 // TEST 1: Correct answers and increasing difficulty (Adaptive Question Selection)
 // ---------------------------------------------------------------------------
 runTest('1. Correct answers and increasing difficulty (escalates to challenge)', () => {
