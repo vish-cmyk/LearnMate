@@ -166,8 +166,8 @@ export function evaluateStudentAnswer({
     // Check if student typed part of the option text or option value
     const matchingOption = currentQuestion.options?.find(
       (opt: any) =>
-        opt.value.toUpperCase() === cleanUpper ||
-        opt.label.toLowerCase().includes(cleanInput)
+        String(opt.value).trim().toUpperCase() === cleanUpper ||
+        String(opt.label).trim().toLowerCase() === cleanInput
     );
 
     const isOptionCorrect = matchingOption ? matchingOption.isCorrect : isLetterMatch;
