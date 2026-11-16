@@ -527,7 +527,7 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
                 key={topic.id}
                 className="group relative"
                 title={topic.title}
-              
+              >
                 <div
                   className={`h-2 rounded-full transition-all ${
                     hasGap
