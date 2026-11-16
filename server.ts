@@ -141,6 +141,14 @@ Key Pedagogical Rules:
 // Stateful server-side tutoring session. This is the single source of truth for
 // question selection, answer evaluation, mastery records, and lesson progression.
 app.post('/api/tutor/session/start', rateLimiter, (req, res) => {
+  const now = Date.now();
+  for (const [id, existing] of tutorSessions.entries()) {
+    if (now - existing.lastActivityAt > 4 * 60 * 60 * 1000) tutorSessions.delete(id);
+  }
+  if (tutorSessions.size >= 1000) {
+    const oldest = [...tutorSessions.entries()].sort((a, b) => a[1].lastActivityAt - b[1].lastActivityAt);
+    for (const [id] of oldest.slice(0, 100)) tutorSessions.delete(id);
+  }
   const allowedPhases = ['diagnostic', 'guided_practice', 'independent_assessment'];
   const requestedPhase = allowedPhases.includes(req.body.initialPhase) ? req.body.initialPhase : 'diagnostic';
   const sessionId = randomUUID();
