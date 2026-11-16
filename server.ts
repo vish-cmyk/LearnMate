@@ -544,4 +544,9 @@ async function startServer() {
   });
 }
 
-startServer();
+export { app };
+
+// Test runners import the Express app and bind their own ephemeral HTTP listener.
+if (process.env.NODE_ENV !== 'test') {
+  startServer();
+}
