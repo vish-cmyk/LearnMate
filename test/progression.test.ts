@@ -66,6 +66,8 @@ runTest('1. Correct answers and increasing difficulty (escalates to challenge)',
   assert(step2.evalResult.isCorrect === true, 'Step 2 answer 20/35 must be correct');
   assert(step2.canAdvance === true, 'canAdvance must be true');
   assert(step2.conceptConsecutiveCorrect === 2, 'consecutiveCorrect must be 2');
+  assert(step2.questionId === 'prac-equiv-2', 'Step history must record the question the student answered, not the newly loaded challenge');
+  assert(step2.conceptId === 'equivalent-fractions', 'Step history must retain the concept the student answered');
 
   // Verify actual adaptive question escalation
   assert(
