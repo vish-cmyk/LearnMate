@@ -115,8 +115,12 @@ export class TutorProgressionEngine {
       }
     }
 
+    // Preserve the question the student actually answered before adaptive routing changes it.
+    const answeredQuestion = this.activeQuestion;
+    const answeredTopicId = answeredQuestion.topicId;
+
     this.totalAttempts++;
-    const currentConcept = this.conceptStats[this.activeQuestion.topicId];
+    const currentConcept = this.conceptStats[answeredTopicId];
 
     // 1. Evaluate with authoritative mathematical validation engine
     const evalResult = evaluateStudentAnswer({
@@ -252,10 +256,10 @@ export class TutorProgressionEngine {
 
     const stepResult: ProgressionEngineStepResult = {
       stepNumber: this.stepHistory.length + 1,
-      questionId: this.activeQuestion.id,
+      questionId: answeredQuestion.id,
       studentInput,
       evalResult,
-      conceptId: this.currentTopicId,
+      conceptId: answeredTopicId,
       conceptConsecutiveCorrect: currentConcept.consecutiveCorrect,
       conceptConsecutiveMistakes: currentConcept.consecutiveMistakes,
       hasUnresolvedMistake: currentConcept.hasUnresolvedMistake,
