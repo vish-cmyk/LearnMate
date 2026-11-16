@@ -6,7 +6,7 @@ import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { evaluateStudentAnswer } from './src/utils/fractionEvaluator.ts';
 import { TutorProgressionEngine } from './src/utils/tutorProgressionEngine.ts';
-import { AuthoritativeFractionQuestion, FractionQuestion } from './src/types.ts';
+import { toClientQuestion } from './src/server/publicQuestion.ts';
 import { ACCEPTANCE_SCENARIOS } from './src/data/acceptanceScenarios.ts';
 import {
   AUTHORITATIVE_QUESTION_BANK,
@@ -30,16 +30,6 @@ interface ActiveTutorSession {
 }
 
 const tutorSessions = new Map<string, ActiveTutorSession>();
-
-// Only public question content is sent to the browser. Answer keys and misconception
-// answer patterns remain exclusively on the server.
-function toClientQuestion(question: AuthoritativeFractionQuestion): FractionQuestion {
-  const { correctAnswer, unsimplifiedAnswer, simplifiedAnswer, commonMisconceptions, options, ...publicQuestion } = question;
-  return {
-    ...publicQuestion,
-    options: options?.map(({ label, value }) => ({ label, value })),
-  };
-}
 
 function getTutorSessionSnapshot(session: ActiveTutorSession) {
   const engine = session.engine;
