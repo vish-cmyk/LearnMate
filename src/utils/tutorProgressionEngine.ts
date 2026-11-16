@@ -345,7 +345,15 @@ export class TutorProgressionEngine {
       }
 
       // Never bypass a known learning gap in another concept.
-      const unresolvedTopic = FRACTION_TOPICS.find((topic) => this.conceptStats[topic.id]?.hasUnresolvedMistake);
+      const unresolvedTopic = FRACTION_TOPICS.find((topic) =>
+        this.conceptStats[topic.id]?.hasUnresolvedMistake &&
+        AUTHORITATIVE_QUESTION_BANK.some(
+          (q) =>
+            q.topicId === topic.id &&
+            q.stage === 'guided_practice' &&
+            !this.completedQuestionIds.has(q.id)
+        )
+      );
       if (unresolvedTopic) {
         const recoveryQuestion = AUTHORITATIVE_QUESTION_BANK.find(
           (q) =>
@@ -359,6 +367,11 @@ export class TutorProgressionEngine {
           this.canAdvance = false;
           return true;
         }
+      }
+
+      // If an unresolved concept has no remaining question, stop rather than silently
+      // claiming the student can move on to the assessment.
+      if (FRACTION_TOPICS.some((topic) => this.conceptStats[topic.id]?.hasUnresolvedMistake)) {
         return false;
       }
 
