@@ -87,24 +87,25 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     if (!snapshot) return;
     const nextQuestion = snapshot.activeQuestion as FractionQuestion | undefined;
     if (nextQuestion) {
-      if (deferQuestion && nextQuestion.id !== activeQuestion.id) {
+      const shouldDeferQuestion = deferQuestion && nextQuestion.id !== activeQuestion.id;
+      if (shouldDeferQuestion) {
         setPendingServerQuestion(nextQuestion);
       } else {
         setServerQuestion(nextQuestion);
         setPendingServerQuestion(null);
+        const nextTopicIndex = FRACTION_TOPICS.findIndex((topic) => topic.id === snapshot.currentTopicId);
+        if (nextTopicIndex >= 0) setCurrentTopicIdx(nextTopicIndex);
+        setCurrentPhase(snapshot.phase);
+        const questionsForPhase = FRACTIONS_QUESTION_BANK.filter((question) =>
+          snapshot.phase === 'diagnostic'
+            ? question.stage === 'diagnostic'
+            : snapshot.phase === 'independent_assessment'
+            ? question.stage === 'independent_assessment'
+            : question.stage === 'guided_practice' && question.topicId === snapshot.currentTopicId
+        );
+        const nextIndex = questionsForPhase.findIndex((question) => question.id === nextQuestion.id);
+        setCurrentQuestionIdx(Math.max(0, nextIndex));
       }
-      const nextTopicIndex = FRACTION_TOPICS.findIndex((topic) => topic.id === snapshot.currentTopicId);
-      if (nextTopicIndex >= 0) setCurrentTopicIdx(nextTopicIndex);
-      setCurrentPhase(snapshot.phase);
-      const questionsForPhase = FRACTIONS_QUESTION_BANK.filter((question) =>
-        snapshot.phase === 'diagnostic'
-          ? question.stage === 'diagnostic'
-          : snapshot.phase === 'independent_assessment'
-          ? question.stage === 'independent_assessment'
-          : question.stage === 'guided_practice' && question.topicId === snapshot.currentTopicId
-      );
-      const nextIndex = questionsForPhase.findIndex((question) => question.id === nextQuestion.id);
-      setCurrentQuestionIdx(Math.max(0, nextIndex));
     }
     if (Array.isArray(snapshot.conceptRecords)) {
       setConceptRecords(Object.fromEntries(snapshot.conceptRecords.map((record: ConceptMasteryRecord) => [record.topicId, record])));
@@ -506,6 +507,7 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
 
             <button
               onClick={() => handleCompleteLesson()}
+              disabled={!sessionReady}
               className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors flex items-center gap-1.5"
             >
               <Award className="w-3.5 h-3.5 text-slate-600" />
