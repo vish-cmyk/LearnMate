@@ -783,7 +783,7 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
             </div>
 
             <button
-              onClick={handleCompleteLesson}
+              onClick={() => handleCompleteLesson()}
               className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors flex items-center gap-1.5"
             >
               <Award className="w-3.5 h-3.5 text-slate-600" />
