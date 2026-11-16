@@ -14,6 +14,10 @@
 import { TutorProgressionEngine } from '../src/utils/tutorProgressionEngine';
 import { ACCEPTANCE_SCENARIOS } from '../src/data/acceptanceScenarios';
 import { FRACTIONS_QUESTION_BANK } from '../src/data/fractionsCurriculum';
+import { AUTHORITATIVE_QUESTION_BANK } from '../src/server/authoritativeQuestionBank';
+import { evaluateStudentAnswer } from '../src/utils/fractionEvaluator';
+import { toClientQuestion } from '../src/server/publicQuestion';
+import { AuthoritativeFractionQuestion } from '../src/types';
 
 interface TestResult {
   name: string;
@@ -46,6 +50,122 @@ console.log('  LearnMate AI Adaptive Engine Automated Test Suite   ');
 console.log('======================================================\n');
 
 // ---------------------------------------------------------------------------
+// TEST -1: Browser question payloads never expose server answer keys
+// ---------------------------------------------------------------------------
+runTest('-1. Browser-safe questions exclude answer keys and correctness flags', () => {
+  const sourceQuestion = AUTHORITATIVE_QUESTION_BANK.find((question) => question.options && question.options.length > 0) as AuthoritativeFractionQuestion | undefined;
+  assert(sourceQuestion !== undefined, 'Question bank must include a multiple-choice question');
+  const publicQuestion = toClientQuestion(sourceQuestion!);
+  assert(!('correctAnswer' in publicQuestion), 'Correct answer must not be present in the browser payload');
+  assert(!('unsimplifiedAnswer' in publicQuestion), 'Unsimplified answer must not be present in the browser payload');
+  assert(!('simplifiedAnswer' in publicQuestion), 'Simplified answer must not be present in the browser payload');
+  assert(
+    (publicQuestion.options || []).every((option) => !('isCorrect' in option)),
+    'Multiple-choice correctness flags must not be present in the browser payload'
+  );
+});
+
+// ---------------------------------------------------------------------------
+// TEST 0: Multiple-choice answers must match a complete option, not a substring
+// ---------------------------------------------------------------------------
+runTest('0. Multiple-choice validation rejects ambiguous partial text', () => {
+  const question = {
+    id: 'mc-exact-match',
+    topicId: 'equivalent-fractions',
+    topicTitle: 'Equivalent Fractions',
+    stage: 'guided_practice' as const,
+    difficulty: 'standard' as const,
+    prompt: 'Choose the correct option.',
+    questionType: 'multiple_choice' as const,
+    correctAnswer: 'B',
+    hints: [],
+    explanation: 'Test question.',
+    options: [
+      { label: '10 parts', value: 'A', isCorrect: false },
+      { label: '19 parts', value: 'B', isCorrect: true },
+    ],
+  };
+
+  const ambiguous = evaluateStudentAnswer({ studentMessage: '1', currentQuestion: question });
+  assert(ambiguous.assessment === 'incorrect', 'A partial substring must not select an option');
+  const exact = evaluateStudentAnswer({ studentMessage: '19 parts', currentQuestion: question });
+  assert(exact.assessment === 'correct', 'An exact option label must be accepted');
+});
+
+// ---------------------------------------------------------------------------
+// TEST 0B: Server progression owns diagnostic sequencing and queued questions
+// ---------------------------------------------------------------------------
+runTest('0B. Server progression sequences diagnostics and serves queued challenges', () => {
+  const diagnosticEngine = new TutorProgressionEngine({
+    initialPhase: 'diagnostic',
+    initialQuestionId: 'diag-1',
+  });
+  const diagnosticAnswer = diagnosticEngine.submitAnswer('3/8', 'diag-1');
+  assert(diagnosticAnswer.evalResult.isCorrect, 'First diagnostic answer must be correct');
+  assert(diagnosticEngine.advanceToNextQuestion(), 'Diagnostic flow should advance');
+  assert(diagnosticEngine.activeQuestion.id === 'diag-2', 'Next diagnostic must be selected by the server engine');
+
+  const challengeEngine = new TutorProgressionEngine({
+    initialTopicId: 'equivalent-fractions',
+    initialQuestionId: 'prac-equiv-1',
+  });
+  challengeEngine.submitAnswer('B', 'prac-equiv-1');
+  const second = challengeEngine.submitAnswer('20/35', 'prac-equiv-2');
+  assert(second.activeQuestionAfterTurn.id === 'prac-equiv-challenge', 'Second correct answer should queue the challenge');
+  assert(challengeEngine.advanceToNextQuestion(), 'Queued challenge should be presented');
+  assert(challengeEngine.activeQuestion.id === 'prac-equiv-challenge', 'Advancing must not skip a queued challenge');
+});
+
+// ---------------------------------------------------------------------------
+// TEST 0C: Independent assessment never routes back to a guided challenge
+// ---------------------------------------------------------------------------
+runTest('0C. Independent assessment remains in its own question sequence', () => {
+  const engine = new TutorProgressionEngine({
+    initialPhase: 'independent_assessment',
+    initialQuestionId: 'assess-1',
+  });
+  const concept = engine.conceptStats['simplifying-fractions'];
+  concept.attempts = 1;
+  concept.successes = 1;
+  concept.consecutiveCorrect = 1;
+  concept.score = 100;
+
+  const answer = engine.submitAnswer('3/5', 'assess-1');
+  assert(answer.evalResult.isCorrect, 'Assessment answer must be correct');
+  assert(answer.activeQuestionAfterTurn.id === 'assess-1', 'Assessment answer must not queue a guided challenge');
+  assert(engine.advanceToNextQuestion(), 'Assessment should move to its next assessment item');
+  assert(engine.activeQuestion.id === 'assess-2', 'Assessment sequence should continue with assess-2');
+});
+
+// ---------------------------------------------------------------------------
+// TEST 0D: Complete independent assessment sequence is server controlled
+// ---------------------------------------------------------------------------
+runTest('0D. Independent assessment completes only after all three assessment questions', () => {
+  const engine = new TutorProgressionEngine({
+    initialPhase: 'independent_assessment',
+    initialQuestionId: 'assess-1',
+  });
+  const sequence = [
+    { id: 'assess-1', answer: '3/5', next: 'assess-2' },
+    { id: 'assess-2', answer: '1/2', next: 'assess-3' },
+    { id: 'assess-3', answer: '1/2', next: null },
+  ];
+
+  for (const item of sequence) {
+    const result = engine.submitAnswer(item.answer, item.id);
+    assert(result.evalResult.isCorrect, `${item.id} must be marked correct`);
+    if (item.next) {
+      assert(engine.advanceToNextQuestion(), `${item.id} should advance to the next assessment question`);
+      assert(engine.activeQuestion.id === item.next, `Next assessment question should be ${item.next}`);
+      assert(engine.assessmentCompleted === false, 'Assessment must remain incomplete before the final question');
+    } else {
+      assert(engine.advanceToNextQuestion() === false, 'No question should remain after the final assessment item');
+      assert(engine.assessmentCompleted === true, 'Assessment should complete only after the final item');
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
 // TEST 1: Correct answers and increasing difficulty (Adaptive Question Selection)
 // ---------------------------------------------------------------------------
 runTest('1. Correct answers and increasing difficulty (escalates to challenge)', () => {
@@ -66,6 +186,8 @@ runTest('1. Correct answers and increasing difficulty (escalates to challenge)',
   assert(step2.evalResult.isCorrect === true, 'Step 2 answer 20/35 must be correct');
   assert(step2.canAdvance === true, 'canAdvance must be true');
   assert(step2.conceptConsecutiveCorrect === 2, 'consecutiveCorrect must be 2');
+  assert(step2.questionId === 'prac-equiv-2', 'Step history must record the question the student answered, not the newly loaded challenge');
+  assert(step2.conceptId === 'equivalent-fractions', 'Step history must retain the concept the student answered');
 
   // Verify actual adaptive question escalation
   assert(

@@ -70,21 +70,80 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     : 0;
 
   const [currentQuestionIdx, setCurrentQuestionIdx] = useState<number>(startingQuestionIdx);
-  const [overrideQuestionId, setOverrideQuestionId] = useState<string | null>(initialQuestionId || null);
+  const [serverSessionId, setServerSessionId] = useState<string | null>(null);
+  const [serverQuestion, setServerQuestion] = useState<FractionQuestion | null>(null);
+  const [pendingServerQuestion, setPendingServerQuestion] = useState<FractionQuestion | null>(null);
+  const [sessionReady, setSessionReady] = useState(false);
+  const sessionStartRequested = useRef(false);
 
   const activeQuestion: FractionQuestion =
-    (overrideQuestionId ? FRACTIONS_QUESTION_BANK.find((q) => q.id === overrideQuestionId) : null) ||
+    serverQuestion ||
     activeQuestions[currentQuestionIdx] ||
     activeQuestions[0] ||
     FRACTIONS_QUESTION_BANK[0];
 
-  // Check if unattempted challenge question exists for current concept
-  const availableChallenge = FRACTIONS_QUESTION_BANK.find(
-    (q) =>
-      q.topicId === activeQuestion.topicId &&
-      q.difficulty === 'challenge' &&
-      q.id !== activeQuestion.id
-  );
+  // Track questions already answered so challenge routing never sends a student backwards.
+  const applyServerSnapshot = (snapshot: any, deferQuestion = false) => {
+    if (!snapshot) return;
+    const nextQuestion = snapshot.activeQuestion as FractionQuestion | undefined;
+    if (nextQuestion) {
+      const shouldDeferQuestion = deferQuestion && nextQuestion.id !== activeQuestion.id;
+      if (shouldDeferQuestion) {
+        setPendingServerQuestion(nextQuestion);
+      } else {
+        setServerQuestion(nextQuestion);
+        setPendingServerQuestion(null);
+        const nextTopicIndex = FRACTION_TOPICS.findIndex((topic) => topic.id === snapshot.currentTopicId);
+        if (nextTopicIndex >= 0) setCurrentTopicIdx(nextTopicIndex);
+        setCurrentPhase(snapshot.phase);
+        const questionsForPhase = FRACTIONS_QUESTION_BANK.filter((question) =>
+          snapshot.phase === 'diagnostic'
+            ? question.stage === 'diagnostic'
+            : snapshot.phase === 'independent_assessment'
+            ? question.stage === 'independent_assessment'
+            : question.stage === 'guided_practice' && question.topicId === snapshot.currentTopicId
+        );
+        const nextIndex = questionsForPhase.findIndex((question) => question.id === nextQuestion.id);
+        setCurrentQuestionIdx(Math.max(0, nextIndex));
+      }
+    }
+    if (Array.isArray(snapshot.conceptRecords)) {
+      setConceptRecords(Object.fromEntries(snapshot.conceptRecords.map((record: ConceptMasteryRecord) => [record.topicId, record])));
+    }
+    if (typeof snapshot.totalAttempts === 'number') setTotalAttempts(snapshot.totalAttempts);
+    if (typeof snapshot.correctCount === 'number') setCorrectCount(snapshot.correctCount);
+    if (typeof snapshot.incorrectCount === 'number') setIncorrectCount(snapshot.incorrectCount);
+  };
+
+  useEffect(() => {
+    if (sessionStartRequested.current) return;
+    sessionStartRequested.current = true;
+    fetch('/api/tutor/session/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        initialPhase,
+        initialTopicId: FRACTION_TOPICS[resolvedTopicIdx >= 0 ? resolvedTopicIdx : 0]?.id,
+        initialQuestionId: initialQuestionId || undefined,
+      }),
+    })
+      .then(async (response) => {
+        const result = await response.json();
+        if (!response.ok || !result.success) throw new Error(result.error || 'Could not start your learning session.');
+        setServerSessionId(result.sessionId);
+        applyServerSnapshot(result.snapshot);
+        setSessionReady(true);
+      })
+      .catch((error) => {
+        console.error('Unable to start server learning session:', error);
+        setChatMessages((previous) => [...previous, {
+          id: 'session-start-error',
+          sender: 'tutor',
+          text: 'I could not start a secure learning session. Please refresh and try again.',
+          timestamp: 'Just now',
+        }]);
+      });
+  }, []);
 
   // Student inputs
   const [studentInput, setStudentInput] = useState<string>('');
@@ -183,7 +242,7 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
       misconceptionsEncountered: [],
     };
 
-  // Submit student's answer
+  // Answers are evaluated and recorded by the server-side progression engine.
   const handleSubmitAnswer = async () => {
     let answerText = '';
     if (activeQuestion.questionType === 'multiple_choice') {
@@ -193,224 +252,76 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     } else {
       answerText = studentInput.trim();
     }
-
-    if (!answerText) return;
+    if (!answerText || !serverSessionId || !sessionReady) return;
 
     setIsSubmitting(true);
-
-    const studentMsg: ChatMessage = {
+    setChatMessages((previous) => [...previous, {
       id: `msg-${Date.now()}`,
       sender: 'student',
       text: `My answer is: ${answerText}`,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    };
-    setChatMessages((prev) => [...prev, studentMsg]);
-    setTotalAttempts((prev) => prev + 1);
+    }]);
 
     try {
-      // Send concept-specific performance trackers with authoritative questionId
-      const response = await fetch('/api/tutor/chat', {
+      const response = await fetch(`/api/tutor/session/${serverSessionId}/answer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          studentMessage: answerText,
-          questionId: activeQuestion.id,
-          currentTopic: activeQuestion.topicTitle,
-          consecutiveMistakes: currentConceptRecord.consecutiveMistakes,
-          conceptConsecutiveMistakes: currentConceptRecord.consecutiveMistakes,
-          conceptConsecutiveCorrect: currentConceptRecord.consecutiveCorrect,
-          conceptMisconceptions: currentConceptRecord.misconceptionsEncountered,
-          wasRecovering: currentConceptRecord.hasUnresolvedMistake,
-          studentLevel:
-            currentConceptRecord.consecutiveCorrect >= 1
-              ? 'advanced'
-              : currentConceptRecord.consecutiveMistakes >= 1
-              ? 'needs_support'
-              : 'standard',
-          studentHistory: chatMessages.slice(-4),
-        }),
+        body: JSON.stringify({ studentMessage: answerText, questionId: activeQuestion.id }),
       });
-
-      const resData = await response.json();
-      const tutorData = resData.data;
-
-      let newQuestionNotice = '';
+      const result = await response.json();
+      if (!response.ok || !result.success) throw new Error(result.error || 'Unable to check this answer.');
+      const tutorData = result.data;
       const isCorrect = tutorData.assessment === 'correct';
       setLastAttemptCorrect(isCorrect);
       setHasAnsweredCurrent(true);
+      applyServerSnapshot(result.snapshot, true);
 
-      if (isCorrect) {
-        setCorrectCount((prev) => prev + 1);
-
-        // Update concept record with recovery and consecutive tracking
-        setConceptRecords((prev) => {
-          const rec = prev[activeQuestion.topicId] || currentConceptRecord;
-          const newSuccesses = rec.successes + 1;
-          const newAttempts = rec.attempts + 1;
-          const score = Math.round((newSuccesses / newAttempts) * 100);
-          const newConsecutiveCorrect = rec.consecutiveCorrect + 1;
-
-          // Requirement 3: Answering correctly clears any unresolved mistake on this concept
-          const hasUnresolved = false;
-
-          // Requirement 2: Two consecutive correct answers on this concept
-          let status: ConceptMasteryRecord['status'] = 'understood';
-          if (newAttempts >= 2 && score >= 80 && newConsecutiveCorrect >= 2) {
-            status = 'mastered';
-          } else if (score >= 60) {
-            status = 'understood';
-          } else {
-            status = 'needs_practice';
-          }
-
-          // Requirement 3: Actual Adaptive Question Selection after 2 consecutive correct answers on this concept
-          if (newConsecutiveCorrect >= 2) {
-            const challengeQ = FRACTIONS_QUESTION_BANK.find(
-              (q) =>
-                q.topicId === activeQuestion.topicId &&
-                q.difficulty === 'challenge' &&
-                q.id !== activeQuestion.id
-            );
-            if (challengeQ) {
-              setOverrideQuestionId(challengeQ.id);
-              setAdaptiveToast({
-                title: 'Adaptive Escalation: Challenge Question Loaded!',
-                subtitle: `Two in a row on this concept! Stepping up difficulty: "${challengeQ.prompt.slice(0, 50)}..."`,
-              });
-            } else {
-              setAdaptiveToast({
-                title: 'Concept Competence Verified',
-                subtitle: 'Two in a row on this concept! Ready to advance to the next module.',
-              });
-            }
-            setTimeout(() => setAdaptiveToast(null), 5000);
-          }
-
-          return {
-            ...prev,
-            [activeQuestion.topicId]: {
-              ...rec,
-              attempts: newAttempts,
-              successes: newSuccesses,
-              correctAnswers: rec.correctAnswers + 1,
-              incorrectAnswers: rec.incorrectAnswers,
-              consecutiveCorrect: newConsecutiveCorrect,
-              consecutiveMistakes: 0,
-              demonstratedUnderstanding: newConsecutiveCorrect >= 2 || rec.hasUnresolvedMistake,
-              currentDifficultyLevel: newConsecutiveCorrect >= 2 ? 'challenge' : rec.currentDifficultyLevel,
-              hasUnresolvedMistake: hasUnresolved,
-              score,
-              status,
-              notes: `${newSuccesses} of ${newAttempts} answered correctly (${score}%). Demonstrated understanding.`,
-            },
-          };
-        });
-
-        try {
-          confetti({ particleCount: 25, spread: 50, origin: { y: 0.8 } });
-        } catch {
-          // ignore
-        }
-      } else {
-        setIncorrectCount((prev) => prev + 1);
-
-        // Requirement 1 & 4 & 5: Track error on THIS concept and record gap
-        setConceptRecords((prev) => {
-          const rec = prev[activeQuestion.topicId] || currentConceptRecord;
-          const newAttempts = rec.attempts + 1;
-          const score = Math.round((rec.successes / newAttempts) * 100);
-          const newConsecutiveMistakes = rec.consecutiveMistakes + 1;
-          const newMisconceptions = tutorData.misconception
-            ? [...rec.misconceptionsEncountered, tutorData.misconception]
-            : rec.misconceptionsEncountered;
-
-          // Check if same misconception occurred twice on this concept
-          const sameMisconceptionCount = tutorData.misconception
-            ? newMisconceptions.filter((m) => m === tutorData.misconception).length
-            : 0;
-
-          newQuestionNotice = '';
-          // Requirement 4: After two repeated errors on the same concept, change explanation, visual method, AND provide new question!
-          if (sameMisconceptionCount >= 2 || newConsecutiveMistakes >= 2) {
-            setShowVisualizer(true);
-            const remedialQ =
-              FRACTIONS_QUESTION_BANK.find(
-                (q) =>
-                  q.topicId === activeQuestion.topicId &&
-                  q.id !== activeQuestion.id &&
-                  (q.id.includes('remedial') || q.id.includes('whittakers'))
-              ) ||
-              FRACTIONS_QUESTION_BANK.find(
-                (q) =>
-                  q.topicId === activeQuestion.topicId &&
-                  q.id !== activeQuestion.id &&
-                  q.stage === 'guided_practice' &&
-                  q.difficulty === 'intro'
-              );
-
-            if (remedialQ) {
-              setOverrideQuestionId(remedialQ.id);
-              newQuestionNotice = `\n\n**Fresh Visual Practice Question Provided:**\n*${remedialQ.prompt}*`;
-              setAdaptiveToast({
-                title: 'Teaching Strategy Shifted & New Question Provided',
-                subtitle: `Switched approach to visual bar model with a fresh question: "${remedialQ.prompt.slice(0, 50)}..."`,
-              });
-            } else {
-              setAdaptiveToast({
-                title: 'Teaching Strategy Shifted',
-                subtitle: 'Detected repeated difficulty on this concept. Switching to interactive visual model.',
-              });
-            }
-            setTimeout(() => setAdaptiveToast(null), 5000);
-          }
-
-          return {
-            ...prev,
-            [activeQuestion.topicId]: {
-              ...rec,
-              attempts: newAttempts,
-              successes: rec.successes,
-              correctAnswers: rec.correctAnswers,
-              incorrectAnswers: rec.incorrectAnswers + 1,
-              consecutiveMistakes: newConsecutiveMistakes,
-              consecutiveCorrect: 0,
-              demonstratedUnderstanding: false,
-              currentDifficultyLevel: (sameMisconceptionCount >= 2 || newConsecutiveMistakes >= 2) ? 'intro' : rec.currentDifficultyLevel,
-              hasUnresolvedMistake: true, // Marked as requiring practice until demonstrated!
-              misconceptionsEncountered: newMisconceptions,
-              score,
-              status: 'needs_practice',
-              notes: `${rec.successes} of ${newAttempts} passed (${score}%). Unresolved learning gap—requires follow-up demonstration.`,
-            },
-          };
-        });
-
-        if (tutorData.visualPrompt) {
-          setShowVisualizer(true);
-        }
+      if (tutorData.visualPrompt || tutorData.teachingApproach === 'visual_interactive_shift') {
+        setShowVisualizer(true);
       }
-
-      const tutorMsg: ChatMessage = {
+      if (tutorData.adaptiveAction === 'challenge_escalation') {
+        setAdaptiveToast({
+          title: 'Ready for a harder challenge',
+          subtitle: 'Your recent answers show stronger understanding. The next question will stretch you further.',
+        });
+      } else if (tutorData.adaptiveAction === 'approach_shifted_new_question') {
+        setAdaptiveToast({
+          title: 'Let’s try a different approach',
+          subtitle: 'I’ve switched to a fresh question and a visual way of thinking about this concept.',
+        });
+      }
+      if (tutorData.adaptiveAction !== 'standard_correct') {
+        setTimeout(() => setAdaptiveToast(null), 5000);
+      }
+      if (isCorrect) {
+        try { confetti({ particleCount: 25, spread: 50, origin: { y: 0.8 } }); } catch { /* ignore */ }
+      }
+      setChatMessages((previous) => [...previous, {
         id: `tutor-${Date.now()}`,
         sender: 'tutor',
-        text: tutorData.message + (newQuestionNotice ? `\n\n${newQuestionNotice}` : ''),
+        text: tutorData.message,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         assessment: tutorData.assessment,
         misconceptionDiagnosed: tutorData.misconception,
         recommendedAction: tutorData.recommendedAction,
         visualPrompt: tutorData.visualPrompt,
-      };
-
-      setChatMessages((prev) => [...prev, tutorMsg]);
-    } catch (err) {
-      console.error('Failed to submit answer:', err);
+      }]);
+    } catch (error) {
+      setChatMessages((previous) => [...previous, {
+        id: `tutor-error-${Date.now()}`,
+        sender: 'tutor',
+        text: error instanceof Error ? error.message : 'I could not check that answer. Please try again.',
+        timestamp: 'Just now',
+      }]);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // Try again on current question to demonstrate understanding before advancing
+  // Switch to a remedial question selected by the server, if one was queued.
   const handleTryAgain = () => {
+    if (pendingServerQuestion) setServerQuestion(pendingServerQuestion);
+    setPendingServerQuestion(null);
     setHasAnsweredCurrent(false);
     setLastAttemptCorrect(null);
     setStudentInput('');
@@ -431,23 +342,20 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     setChatMessages((prev) => [...prev, hintMsg]);
 
     try {
-      const response = await fetch('/api/tutor/chat', {
+      if (!serverSessionId || !sessionReady) throw new Error('Your learning session is not ready. Please wait a moment and try again.');
+      const response = await fetch(`/api/tutor/session/${serverSessionId}/hint`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          studentMessage: 'Can you give me a gentle hint for this question?',
-          questionId: activeQuestion.id,
-          currentTopic: activeQuestion.topicTitle,
-          studentLevel: 'standard',
-        }),
+        body: JSON.stringify({ questionId: activeQuestion.id }),
       });
       const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || 'I could not prepare a hint just now.');
       const tutorData = data.data;
 
       const tutorHintMsg: ChatMessage = {
         id: `tutor-${Date.now()}`,
         sender: 'tutor',
-        text: tutorData.message || (activeQuestion.hints[0] ?? 'Look closely at the denominator!'),
+        text: tutorData.message || 'Start by identifying what the question is asking you to find.',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         recommendedAction: 'hint',
       };
@@ -468,251 +376,70 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     }
   };
 
-  // Requirement 1: Separate option to leave the lesson early without marking concepts as mastered
-  const handleLeaveLessonEarly = () => {
-    const recordsList = Object.values(conceptRecords).map((rec) => {
-      // Any concept with unresolved errors or incomplete consecutive practice cannot be mastered
-      if (rec.hasUnresolvedMistake || (rec.attempts > 0 && rec.consecutiveCorrect < 2)) {
-        return {
-          ...rec,
-          status: 'needs_practice' as const,
-          demonstratedUnderstanding: false,
-          notes: 'Student exited lesson early without demonstrating mastery on this concept.',
-        };
-      }
-      return rec;
-    });
-
-    const masteredList = recordsList
-      .filter((r) => r.status === 'mastered' && !r.hasUnresolvedMistake && r.consecutiveCorrect >= 2)
-      .map((r) => r.topicTitle);
-
-    const needsPracticeList = recordsList
-      .filter((r) => r.status === 'needs_practice' || r.hasUnresolvedMistake)
-      .map((r) => r.topicTitle);
-
-    const summary: StudentSessionSummary = {
-      sessionDurationSeconds: Math.round((Date.now() - sessionStartTime) / 1000),
-      totalAttempted: totalAttempts,
-      correctAnswers: correctCount,
-      incorrectAnswers: incorrectCount,
-      accuracyPercentage: totalAttempts > 0 ? Math.round((correctCount / totalAttempts) * 100) : 0,
-      conceptsMastered: masteredList,
-      conceptsRequiringPractice: needsPracticeList,
-      addressedMisconceptions: Array.from(
-        new Set(recordsList.flatMap((r) => r.misconceptionsEncountered))
-      ),
-      recommendedNextSteps: [
-        'Resume practice to resolve active learning gaps.',
-        'Use visual models for concepts requiring practice before next session.',
-      ],
-      assessmentCompleted: false,
-    };
-
-    onFinishLesson(summary, recordsList);
-  };
-
-  // Requirement 3: Adaptive Question Selection - Load harder challenge question
-  const handleLoadChallengeQuestion = () => {
-    if (!availableChallenge) return;
-    setOverrideQuestionId(availableChallenge.id);
-    setHasAnsweredCurrent(false);
-    setLastAttemptCorrect(null);
-    setStudentInput('');
-    setInputNum('');
-    setInputDen('');
-    setSelectedOption('');
-    setChatMessages((prev) => [
-      ...prev,
-      {
-        id: `tutor-chal-${Date.now()}`,
-        sender: 'tutor',
-        text: `Awesome initiative! You chose the challenge question. Here is your **Challenge Problem** for ${currentTopic.title}:\n\n*${availableChallenge.prompt}*`,
-        timestamp: 'Just now',
-        recommendedAction: 'advance',
-      },
-    ]);
-  };
-
-  // Requirement 3: Adaptive Question Selection - Move forward to next topic
-  const handleMoveToNextTopic = () => {
-    setHasAnsweredCurrent(false);
-    setLastAttemptCorrect(null);
-    setStudentInput('');
-    setInputNum('');
-    setInputDen('');
-    setSelectedOption('');
-    setOverrideQuestionId(null);
-
-    if (currentTopicIdx < FRACTION_TOPICS.length - 1) {
-      const nextIdx = currentTopicIdx + 1;
-      setCurrentTopicIdx(nextIdx);
-      setCurrentQuestionIdx(0);
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          id: `topic-next-${Date.now()}`,
-          sender: 'tutor',
-          text: `Ka pai! Moving forward to **${FRACTION_TOPICS[nextIdx].title}**!\n${FRACTION_TOPICS[nextIdx].description}`,
-          timestamp: 'Just now',
-          recommendedAction: 'advance',
-        },
-      ]);
-    } else {
-      setCurrentPhase('independent_assessment');
-      setCurrentQuestionIdx(0);
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          id: `assess-start-${Date.now()}`,
-          sender: 'tutor',
-          text: `Tino pai rawa atu! You have worked through all guided modules. Let's start the Independent Assessment!`,
-          timestamp: 'Just now',
-          recommendedAction: 'advance',
-        },
-      ]);
+  const handleFinishFromServer = async (assessmentCompleted = false) => {
+    if (!serverSessionId) return;
+    try {
+      const response = await fetch(`/api/tutor/session/${serverSessionId}/finish`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assessmentCompleted }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) throw new Error(result.error || 'Could not create your learning report.');
+      onFinishLesson(result.summary, result.records);
+    } catch (error) {
+      console.error('Unable to finish learning session:', error);
+      setAdaptiveToast({
+        title: 'Report could not be created',
+        subtitle: error instanceof Error ? error.message : 'Please try again.',
+      });
     }
   };
 
-  // Advance to next question or next phase
-  const handleNextQuestion = () => {
-    if (!lastAttemptCorrect) return;
+  const handleLeaveLessonEarly = () => handleFinishFromServer(false);
+  const handleCompleteLesson = (assessmentCompleted = false) => handleFinishFromServer(assessmentCompleted);
 
-    setHasAnsweredCurrent(false);
-    setLastAttemptCorrect(null);
-    setStudentInput('');
-    setInputNum('');
-    setInputDen('');
-    setSelectedOption('');
-
-    // If currently in diagnostic
-    if (currentPhase === 'diagnostic') {
-      if (currentQuestionIdx < activeQuestions.length - 1) {
-        setCurrentQuestionIdx((prev) => prev + 1);
-        setOverrideQuestionId(null);
-      } else {
-        // Transition to Guided Practice: retain user selection or route to diagnosed learning gap
-        setCurrentPhase('guided_practice');
-        setCurrentQuestionIdx(0);
-        setOverrideQuestionId(null);
-        let targetTopic = resolvedTopicIdx >= 0 ? resolvedTopicIdx : 0;
-        let diagnosisDebrief = '';
-
-        // Check if diagnostic revealed an unresolved learning gap
-        const gapTopic = FRACTION_TOPICS.findIndex((t) => conceptRecords[t.id]?.hasUnresolvedMistake);
-        if (gapTopic >= 0) {
-          targetTopic = gapTopic;
-          const gapConcept = FRACTION_TOPICS[gapTopic];
-          diagnosisDebrief = `Based on your diagnostic responses, we detected an area in **${gapConcept.title}** that will benefit from hands-on visual practice. Strengthening this now will make future fraction problems much simpler!`;
-        } else if (resolvedTopicIdx >= 0) {
-          targetTopic = resolvedTopicIdx;
-          diagnosisDebrief = `Great work on the diagnostic! Your foundational baselines are looking steady, so we're diving right into your selected topic: **${FRACTION_TOPICS[targetTopic].title}**.`;
-        } else {
-          targetTopic = 0;
-          diagnosisDebrief = `Ka pai! You've set your learning baseline. Let's begin with **${FRACTION_TOPICS[0].title}** to ensure your conceptual core is rock-solid.`;
-        }
-
-        setCurrentTopicIdx(targetTopic);
-
-        const targetTopicData = FRACTION_TOPICS[targetTopic] || FRACTION_TOPICS[0];
-        setChatMessages((prev) => [
-          ...prev,
-          {
-            id: `diag-end-${Date.now()}`,
-            sender: 'tutor',
-            text: `Ka pai! Diagnostic check completed. 🎉\n\n${diagnosisDebrief}\n\n**Next Module: ${targetTopicData.title}**\n${targetTopicData.description}`,
-            timestamp: 'Just now',
-            recommendedAction: 'advance',
-          },
-        ]);
+  const handleNextQuestion = async () => {
+    if (!serverSessionId || !sessionReady) return;
+    setIsSubmitting(true);
+    try {
+      const response = await fetch(`/api/tutor/session/${serverSessionId}/advance`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const result = await response.json();
+      if (!response.ok || !result.success) throw new Error(result.error || 'Resolve the current learning gap before moving forward.');
+      if (!result.advanced && result.snapshot?.assessmentCompleted) {
+        applyServerSnapshot(result.snapshot);
+        await handleCompleteLesson(true);
+        return;
       }
-      return;
-    }
-
-    // If in guided practice
-    if (currentPhase === 'guided_practice') {
-      setOverrideQuestionId(null);
-
-      if (currentQuestionIdx < activeQuestions.length - 1) {
-        setCurrentQuestionIdx((prev) => prev + 1);
-      } else {
-        // Advance to next topic
-        if (currentTopicIdx < FRACTION_TOPICS.length - 1) {
-          const nextIdx = currentTopicIdx + 1;
-          setCurrentTopicIdx(nextIdx);
-          setCurrentQuestionIdx(0);
-
-          setChatMessages((prev) => [
-            ...prev,
-            {
-              id: `topic-next-${Date.now()}`,
-              sender: 'tutor',
-              text: `Awesome progress! You’ve completed the practice for ${FRACTION_TOPICS[currentTopicIdx].title}.\n\nNext up: **${FRACTION_TOPICS[nextIdx].title}**!\n${FRACTION_TOPICS[nextIdx].description}`,
-              timestamp: 'Just now',
-              recommendedAction: 'advance',
-            },
-          ]);
-        } else {
-          // Transition to independent assessment
-          setCurrentPhase('independent_assessment');
-          setCurrentQuestionIdx(0);
-
-          setChatMessages((prev) => [
-            ...prev,
-            {
-              id: `assess-start-${Date.now()}`,
-              sender: 'tutor',
-              text: `Tino pai rawa atu! You have worked through all 7 core fraction learning modules. 🌟\n\nLet's do a brief 3-question Independent Mastery Assessment to verify your understanding and create your End-of-Lesson Learning Summary Report. Ready?`,
-              timestamp: 'Just now',
-              recommendedAction: 'advance',
-            },
-          ]);
-        }
+      if (!result.advanced) {
+        setAdaptiveToast({
+          title: 'One more step needed',
+          subtitle: 'There are no more questions available for this topic yet. Your learning report will show what still needs practice.',
+        });
+        return;
       }
-      return;
-    }
-
-    // If in independent assessment
-    if (currentPhase === 'independent_assessment') {
-      if (currentQuestionIdx < activeQuestions.length - 1) {
-        setCurrentQuestionIdx((prev) => prev + 1);
-        setOverrideQuestionId(null);
-      } else {
-        handleCompleteLesson();
-      }
+      applyServerSnapshot(result.snapshot);
+      setHasAnsweredCurrent(false);
+      setLastAttemptCorrect(null);
+      setStudentInput('');
+      setInputNum('');
+      setInputDen('');
+      setSelectedOption('');
+      setShowVisualizer(false);
+    } catch (error) {
+      setAdaptiveToast({
+        title: 'Let’s close the learning gap first',
+        subtitle: error instanceof Error ? error.message : 'Please try the current question again.',
+      });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  const handleCompleteLesson = () => {
-    const recordsList = Object.values(conceptRecords);
-
-    // Requirement 3 & 5: Never claim concept is mastered if hasUnresolvedMistake is true!
-    const masteredList = recordsList
-      .filter((r) => r.status === 'mastered' && !r.hasUnresolvedMistake)
-      .map((r) => r.topicTitle);
-
-    const needsPracticeList = recordsList
-      .filter((r) => r.status === 'needs_practice' || r.hasUnresolvedMistake)
-      .map((r) => r.topicTitle);
-
-    const summary: StudentSessionSummary = {
-      sessionDurationSeconds: Math.round((Date.now() - sessionStartTime) / 1000),
-      totalAttempted: totalAttempts,
-      correctAnswers: correctCount,
-      incorrectAnswers: incorrectCount,
-      accuracyPercentage: totalAttempts > 0 ? Math.round((correctCount / totalAttempts) * 100) : 0,
-      conceptsMastered: masteredList,
-      conceptsRequiringPractice: needsPracticeList,
-      addressedMisconceptions: currentConceptRecord.misconceptionsEncountered,
-      recommendedNextSteps: [
-        'Explore Mixed Numbers & Improper Fractions (e.g. 7/4 = 1 3/4)',
-        'Connect Fractions to Decimals & Percentages (Year 9 Number Strand)',
-      ],
-      assessmentCompleted: currentPhase === 'independent_assessment',
-    };
-
-    onFinishLesson(summary, recordsList);
-  };
+  const handleMoveToNextTopic = () => handleNextQuestion();
 
   const currentTopic = FRACTION_TOPICS[currentTopicIdx] || FRACTION_TOPICS[0];
 
@@ -776,7 +503,8 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
             </div>
 
             <button
-              onClick={handleCompleteLesson}
+              onClick={() => handleCompleteLesson()}
+              disabled={!sessionReady}
               className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors flex items-center gap-1.5"
             >
               <Award className="w-3.5 h-3.5 text-slate-600" />
@@ -796,12 +524,8 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
             return (
               <div
                 key={topic.id}
-                className="group relative cursor-pointer"
-                onClick={() => {
-                  setCurrentPhase('guided_practice');
-                  setCurrentTopicIdx(i);
-                  setCurrentQuestionIdx(0);
-                }}
+                className="group relative"
+                title={topic.title}
               >
                 <div
                   className={`h-2 rounded-full transition-all ${
@@ -1047,40 +771,21 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
                 {!hasAnsweredCurrent ? (
                   <button
                     onClick={handleSubmitAnswer}
-                    disabled={isSubmitting || (!selectedOption && !inputNum && !studentInput)}
+                    disabled={!sessionReady || isSubmitting || (!selectedOption && !inputNum && !studentInput)}
                     className="w-full py-2.5 px-4 bg-sky-600 text-white font-semibold text-xs rounded-lg hover:bg-sky-700 transition-colors shadow-xs disabled:opacity-40 flex items-center justify-center gap-2"
                   >
                     <span>{isSubmitting ? 'Checking with Tutor...' : 'Submit Answer'}</span>
                     <Send className="w-3.5 h-3.5" />
                   </button>
                 ) : lastAttemptCorrect ? (
-                  currentConceptRecord.consecutiveCorrect >= 2 && availableChallenge ? (
-                    <div className="space-y-2">
-                      <button
-                        onClick={handleLoadChallengeQuestion}
-                        className="w-full py-2.5 px-4 bg-sky-600 text-white font-semibold text-xs rounded-lg hover:bg-sky-700 transition-colors shadow-xs flex items-center justify-center gap-2"
-                      >
-                        <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-                        <span>Take on Harder Challenge Question</span>
-                        <ArrowRight className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={handleMoveToNextTopic}
-                        className="w-full py-2 px-4 bg-slate-100 text-slate-700 font-semibold text-xs rounded-lg hover:bg-slate-200 transition-colors border border-slate-200 flex items-center justify-center gap-1.5"
-                      >
-                        <span>Move Forward to Next Topic</span>
-                        <ArrowRight className="w-3 h-3 text-slate-400" />
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={handleNextQuestion}
-                      className="w-full py-2.5 px-4 bg-slate-900 text-white font-semibold text-xs rounded-lg hover:bg-slate-800 transition-colors shadow-xs flex items-center justify-center gap-2"
-                    >
-                      <span>Proceed to Next Question</span>
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </button>
-                  )
+                  <button
+                    onClick={handleNextQuestion}
+                    disabled={isSubmitting || !sessionReady}
+                    className="w-full py-2.5 px-4 bg-slate-900 text-white font-semibold text-xs rounded-lg hover:bg-slate-800 transition-colors shadow-xs flex items-center justify-center gap-2 disabled:opacity-40"
+                  >
+                    <span>Proceed to Next Question</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
                 ) : (
                   /* Requirement 1: Removed 'Understood, Next'. Student MUST retry to demonstrate understanding. Separate leave option provided. */
                   <div className="space-y-2">

@@ -1,10 +1,12 @@
 import express from 'express';
+import { randomUUID } from 'node:crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { evaluateStudentAnswer } from './src/utils/fractionEvaluator.ts';
 import { TutorProgressionEngine } from './src/utils/tutorProgressionEngine.ts';
+import { toClientQuestion } from './src/server/publicQuestion.ts';
 import { ACCEPTANCE_SCENARIOS } from './src/data/acceptanceScenarios.ts';
 import {
   AUTHORITATIVE_QUESTION_BANK,
@@ -20,6 +22,44 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 app.use(express.json({ limit: '64kb' }));
+
+interface ActiveTutorSession {
+  engine: TutorProgressionEngine;
+  createdAt: number;
+  lastActivityAt: number;
+  hintQuestionId: string | null;
+  hintsUsed: number;
+}
+
+const tutorSessions = new Map<string, ActiveTutorSession>();
+
+function getTutorSessionSnapshot(session: ActiveTutorSession) {
+  const engine = session.engine;
+  return {
+    phase: engine.currentPhase,
+    currentTopicId: engine.currentTopicId,
+    activeQuestion: toClientQuestion(engine.activeQuestion),
+    conceptRecords: Object.values(engine.conceptStats),
+    totalAttempts: engine.totalAttempts,
+    correctCount: engine.correctCount,
+    incorrectCount: engine.incorrectCount,
+    canAdvance: engine.canAdvance,
+    isRetryRequired: engine.isRetryRequired,
+    teachingApproach: engine.teachingApproach,
+    assessmentCompleted: engine.assessmentCompleted,
+  };
+}
+
+function findTutorSession(sessionId: string): ActiveTutorSession | undefined {
+  const session = tutorSessions.get(sessionId);
+  if (!session) return undefined;
+  if (Date.now() - session.lastActivityAt > 4 * 60 * 60 * 1000) {
+    tutorSessions.delete(sessionId);
+    return undefined;
+  }
+  session.lastActivityAt = Date.now();
+  return session;
+}
 
 // In-Memory Rate Limiter (Protects Gemini API quotas and server resources)
 const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
@@ -89,6 +129,169 @@ Key Pedagogical Rules:
    - "recommendedAction": "advance" | "reinforce" | "simplify" | "hint"
    - "visualPrompt": Suggestion for a visual aid if helpful (e.g. "bar_model_quarters", "pizza_slices") or null.
 `;
+
+// Stateful server-side tutoring session. This is the single source of truth for
+// question selection, answer evaluation, mastery records, and lesson progression.
+app.post('/api/tutor/session/start', rateLimiter, (req, res) => {
+  const now = Date.now();
+  for (const [id, existing] of tutorSessions.entries()) {
+    if (now - existing.lastActivityAt > 4 * 60 * 60 * 1000) tutorSessions.delete(id);
+  }
+  if (tutorSessions.size >= 1000) {
+    const oldest = [...tutorSessions.entries()].sort((a, b) => a[1].lastActivityAt - b[1].lastActivityAt);
+    for (const [id] of oldest.slice(0, 100)) tutorSessions.delete(id);
+  }
+  const allowedPhases = ['diagnostic', 'guided_practice', 'independent_assessment'];
+  const requestedPhase = allowedPhases.includes(req.body.initialPhase) ? req.body.initialPhase : 'diagnostic';
+  const sessionId = randomUUID();
+  const session: ActiveTutorSession = {
+    engine: new TutorProgressionEngine({
+      initialPhase: requestedPhase,
+      initialTopicId: typeof req.body.initialTopicId === 'string' ? req.body.initialTopicId : undefined,
+      initialQuestionId: typeof req.body.initialQuestionId === 'string' ? req.body.initialQuestionId : undefined,
+    }),
+    createdAt: Date.now(),
+    lastActivityAt: Date.now(),
+    hintQuestionId: null,
+    hintsUsed: 0,
+  };
+  tutorSessions.set(sessionId, session);
+  return res.json({ success: true, sessionId, snapshot: getTutorSessionSnapshot(session) });
+});
+
+app.post('/api/tutor/session/:sessionId/answer', rateLimiter, async (req, res) => {
+  try {
+    const session = findTutorSession(req.params.sessionId);
+    if (!session) return res.status(404).json({ success: false, error: 'Learning session expired. Please start a new lesson.' });
+
+    const studentMessage = sanitizeInput(req.body.studentMessage);
+    const questionId = typeof req.body.questionId === 'string' ? req.body.questionId : '';
+    if (!studentMessage) return res.status(400).json({ success: false, error: 'Please enter an answer.' });
+    if (!questionId || questionId !== session.engine.activeQuestion.id) {
+      return res.status(409).json({ success: false, error: 'This question is no longer active. Please use the current question shown.' });
+    }
+
+    if (session.engine.completedQuestionIds.has(questionId)) {
+      return res.status(409).json({
+        success: false,
+        error: 'You have already answered this question correctly. Please continue to the next question.',
+      });
+    }
+
+    const answeredQuestion = session.engine.activeQuestion;
+    const step = session.engine.submitAnswer(studentMessage, questionId);
+    session.hintQuestionId = null;
+    session.hintsUsed = 0;
+    let message = step.evalResult.tutorMessage;
+
+    // Gemini may improve the wording, but the server engine remains authoritative for
+    // correctness, misconceptions, mastery, and progression.
+    if (ai) {
+      try {
+        const prompt = `Student answer: "${studentMessage}"
+Question: "${answeredQuestion.prompt}"
+Math expression: "${answeredQuestion.mathExpression || ''}"
+Verified assessment: ${step.evalResult.assessment}
+Verified misconception: ${step.evalResult.misconception || 'None'}
+Required teaching action: ${step.evalResult.recommendedAction}
+Pedagogical guidance: ${step.evalResult.tutorMessage}
+
+Rewrite the feedback in warm, concise, age-appropriate New Zealand English. Do not reveal the answer to an incorrect response. Do not change the assessment. Return JSON: {"message":"..."}`;
+        const response: any = await Promise.race([
+          ai.models.generateContent({
+            model: 'gemini-3.8-flash',
+            contents: prompt,
+            config: { systemInstruction: TUTOR_SYSTEM_INSTRUCTION, responseMimeType: 'application/json' },
+          }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Gemini timeout')), 4500)),
+        ]);
+        if (response.text) {
+          const parsed = JSON.parse(response.text);
+          if (typeof parsed.message === 'string' && parsed.message.trim()) message = parsed.message.slice(0, 3000);
+        }
+      } catch (error) {
+        console.warn('Gemini wording enhancement unavailable; using verified tutor feedback.', error);
+      }
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        assessment: step.evalResult.assessment,
+        isCorrect: step.evalResult.isCorrect,
+        misconception: step.evalResult.misconception,
+        recommendedAction: step.evalResult.recommendedAction,
+        visualPrompt: step.evalResult.visualPrompt,
+        message,
+        adaptiveAction: step.adaptiveAction,
+        teachingApproach: step.teachingApproach,
+      },
+      snapshot: getTutorSessionSnapshot(session),
+    });
+  } catch (error) {
+    console.error('Failed to process session answer:', error);
+    return res.status(500).json({ success: false, error: 'Unable to check this answer right now.' });
+  }
+});
+
+// Session-bound hints: the server chooses the active question and reveals one hint at a time.
+app.post('/api/tutor/session/:sessionId/hint', rateLimiter, (req, res) => {
+  const session = findTutorSession(req.params.sessionId);
+  if (!session) return res.status(404).json({ success: false, error: 'Learning session expired. Please start a new lesson.' });
+
+  const activeQuestion = session.engine.activeQuestion;
+  const requestedQuestionId = typeof req.body.questionId === 'string' ? req.body.questionId : '';
+  if (requestedQuestionId !== activeQuestion.id) {
+    return res.status(409).json({
+      success: false,
+      error: 'That question is no longer active. Please use the current question.',
+    });
+  }
+
+  if (session.hintQuestionId !== activeQuestion.id) {
+    session.hintQuestionId = activeQuestion.id;
+    session.hintsUsed = 0;
+  }
+
+  const availableHints = activeQuestion.hints.filter((hint) => typeof hint === 'string' && hint.trim());
+  const hint = availableHints.length
+    ? availableHints[Math.min(session.hintsUsed, availableHints.length - 1)]
+    : 'Start by identifying what the question is asking you to find. What information have you been given?';
+  session.hintsUsed++;
+
+  return res.json({
+    success: true,
+    data: {
+      message: hint,
+      hintNumber: Math.min(session.hintsUsed, Math.max(1, availableHints.length)),
+      hintsRemaining: Math.max(0, availableHints.length - session.hintsUsed),
+    },
+  });
+});
+
+app.post('/api/tutor/session/:sessionId/advance', rateLimiter, (req, res) => {
+  const session = findTutorSession(req.params.sessionId);
+  if (!session) return res.status(404).json({ success: false, error: 'Learning session expired. Please start a new lesson.' });
+  try {
+    const advanced = session.engine.advanceToNextQuestion();
+    return res.json({ success: true, advanced, snapshot: getTutorSessionSnapshot(session) });
+  } catch (error) {
+    return res.status(409).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Resolve the current learning gap before moving forward.',
+      snapshot: getTutorSessionSnapshot(session),
+    });
+  }
+});
+
+app.post('/api/tutor/session/:sessionId/finish', rateLimiter, (req, res) => {
+  const session = findTutorSession(req.params.sessionId);
+  if (!session) return res.status(404).json({ success: false, error: 'Learning session expired. Please start a new lesson.' });
+  const result = session.engine.leaveLessonEarly();
+  result.summary.assessmentCompleted = Boolean(req.body.assessmentCompleted && session.engine.assessmentCompleted);
+  tutorSessions.delete(req.params.sessionId);
+  return res.json({ success: true, summary: result.summary, records: result.records });
+});
 
 // Secure Adaptive Tutor Endpoint
 app.post('/api/tutor/chat', rateLimiter, async (req, res) => {
@@ -389,4 +592,9 @@ async function startServer() {
   });
 }
 
-startServer();
+export { app };
+
+// Test runners import the Express app and bind their own ephemeral HTTP listener.
+if (process.env.NODE_ENV !== 'test') {
+  startServer();
+}
