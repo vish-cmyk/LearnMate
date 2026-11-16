@@ -7,7 +7,7 @@
     "dev": "tsx server.ts",
     "build": "vite build",
     "start": "tsx server.ts",
-    "test": "tsx test/progression.test.ts",
+    "test": "tsx test/progression.test.ts && tsx test/sessionApi.test.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"
