@@ -98,6 +98,27 @@ runTest('0B. Server progression sequences diagnostics and serves queued challeng
 });
 
 // ---------------------------------------------------------------------------
+// TEST 0C: Independent assessment never routes back to a guided challenge
+// ---------------------------------------------------------------------------
+runTest('0C. Independent assessment remains in its own question sequence', () => {
+  const engine = new TutorProgressionEngine({
+    initialPhase: 'independent_assessment',
+    initialQuestionId: 'assess-1',
+  });
+  const concept = engine.conceptStats['simplifying-fractions'];
+  concept.attempts = 1;
+  concept.successes = 1;
+  concept.consecutiveCorrect = 1;
+  concept.score = 100;
+
+  const answer = engine.submitAnswer('3/5', 'assess-1');
+  assert(answer.evalResult.isCorrect, 'Assessment answer must be correct');
+  assert(answer.activeQuestionAfterTurn.id === 'assess-1', 'Assessment answer must not queue a guided challenge');
+  assert(engine.advanceToNextQuestion(), 'Assessment should move to its next assessment item');
+  assert(engine.activeQuestion.id === 'assess-2', 'Assessment sequence should continue with assess-2');
+});
+
+// ---------------------------------------------------------------------------
 // TEST 1: Correct answers and increasing difficulty (Adaptive Question Selection)
 // ---------------------------------------------------------------------------
 runTest('1. Correct answers and increasing difficulty (escalates to challenge)', () => {
