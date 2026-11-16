@@ -46,6 +46,7 @@ export class TutorProgressionEngine {
   public startTime: number;
   public completedQuestionIds: Set<string>;
   public stepHistory: ProgressionEngineStepResult[];
+  public assessmentCompleted: boolean;
 
   constructor(options?: {
     initialPhase?: 'diagnostic' | 'guided_practice' | 'independent_assessment';
@@ -79,6 +80,7 @@ export class TutorProgressionEngine {
     this.startTime = Date.now();
     this.completedQuestionIds = new Set<string>();
     this.stepHistory = [];
+    this.assessmentCompleted = false;
 
     // Initialize per-concept records
     this.conceptStats = {};
@@ -291,34 +293,116 @@ export class TutorProgressionEngine {
       );
     }
 
-    // Find next uncompleted question for current topic or advance topic
-    const nextQ = AUTHORITATIVE_QUESTION_BANK.find(
-      (q) =>
-        q.topicId === this.currentTopicId &&
-        q.stage === this.currentPhase &&
-        !this.completedQuestionIds.has(q.id)
-    );
-
-    if (nextQ) {
-      this.activeQuestion = nextQ;
+    // An adaptive challenge or remedial question may already have been queued by submitAnswer.
+    // Present it before looking for another question.
+    if (!this.completedQuestionIds.has(this.activeQuestion.id)) {
       this.canAdvance = false;
       return true;
     }
 
-    // Advance to next topic in curriculum
-    const currentIdx = FRACTION_TOPICS.findIndex((t) => t.id === this.currentTopicId);
-    if (currentIdx >= 0 && currentIdx < FRACTION_TOPICS.length - 1) {
-      const nextTopic = FRACTION_TOPICS[currentIdx + 1];
-      this.currentTopicId = nextTopic.id;
-      const firstQOfNext = AUTHORITATIVE_QUESTION_BANK.find(
-        (q) => q.topicId === nextTopic.id && q.stage === 'guided_practice'
+    if (this.currentPhase === 'diagnostic') {
+      const nextDiagnostic = AUTHORITATIVE_QUESTION_BANK.find(
+        (q) => q.stage === 'diagnostic' && !this.completedQuestionIds.has(q.id)
       );
-      this.activeQuestion = firstQOfNext || AUTHORITATIVE_QUESTION_BANK[0];
+      if (nextDiagnostic) {
+        this.activeQuestion = nextDiagnostic;
+        this.currentTopicId = nextDiagnostic.topicId;
+        this.canAdvance = false;
+        return true;
+      }
+
+      const gapTopic = FRACTION_TOPICS.find((topic) => this.conceptStats[topic.id]?.hasUnresolvedMistake);
+      const firstTopic = gapTopic || FRACTION_TOPICS[0];
+      this.currentPhase = 'guided_practice';
+      this.currentTopicId = firstTopic.id;
+      const firstPractice = AUTHORITATIVE_QUESTION_BANK.find(
+        (q) => q.topicId === firstTopic.id && q.stage === 'guided_practice' && !this.completedQuestionIds.has(q.id)
+      );
+      if (!firstPractice) return this.beginIndependentAssessment();
+      this.activeQuestion = firstPractice;
       this.canAdvance = false;
       return true;
     }
 
+    if (this.currentPhase === 'guided_practice') {
+      const nextSameTopic = AUTHORITATIVE_QUESTION_BANK.find(
+        (q) =>
+          q.topicId === this.currentTopicId &&
+          q.stage === 'guided_practice' &&
+          !this.completedQuestionIds.has(q.id)
+      );
+      if (nextSameTopic) {
+        this.activeQuestion = nextSameTopic;
+        this.canAdvance = false;
+        return true;
+      }
+
+      // Never bypass a known learning gap in another concept.
+      const unresolvedTopic = FRACTION_TOPICS.find((topic) => this.conceptStats[topic.id]?.hasUnresolvedMistake);
+      if (unresolvedTopic) {
+        const recoveryQuestion = AUTHORITATIVE_QUESTION_BANK.find(
+          (q) =>
+            q.topicId === unresolvedTopic.id &&
+            q.stage === 'guided_practice' &&
+            !this.completedQuestionIds.has(q.id)
+        );
+        if (recoveryQuestion) {
+          this.currentTopicId = unresolvedTopic.id;
+          this.activeQuestion = recoveryQuestion;
+          this.canAdvance = false;
+          return true;
+        }
+        return false;
+      }
+
+      const currentIdx = FRACTION_TOPICS.findIndex((topic) => topic.id === this.currentTopicId);
+      const nextTopic = FRACTION_TOPICS.slice(currentIdx + 1).find((topic) =>
+        AUTHORITATIVE_QUESTION_BANK.some(
+          (q) => q.topicId === topic.id && q.stage === 'guided_practice' && !this.completedQuestionIds.has(q.id)
+        )
+      );
+      if (nextTopic) {
+        this.currentTopicId = nextTopic.id;
+        this.activeQuestion = AUTHORITATIVE_QUESTION_BANK.find(
+          (q) => q.topicId === nextTopic.id && q.stage === 'guided_practice' && !this.completedQuestionIds.has(q.id)
+        )!;
+        this.canAdvance = false;
+        return true;
+      }
+
+      return this.beginIndependentAssessment();
+    }
+
+    const nextAssessmentQuestion = AUTHORITATIVE_QUESTION_BANK.find(
+      (q) => q.stage === 'independent_assessment' && !this.completedQuestionIds.has(q.id)
+    );
+    if (nextAssessmentQuestion) {
+      this.activeQuestion = nextAssessmentQuestion;
+      this.currentTopicId = nextAssessmentQuestion.topicId;
+      this.canAdvance = false;
+      return true;
+    }
+
+    this.assessmentCompleted = true;
+    this.canAdvance = false;
     return false;
+  }
+
+  private beginIndependentAssessment(): boolean {
+    const firstAssessmentQuestion = AUTHORITATIVE_QUESTION_BANK.find(
+      (q) => q.stage === 'independent_assessment' && !this.completedQuestionIds.has(q.id)
+    );
+    if (!firstAssessmentQuestion) {
+      this.assessmentCompleted = true;
+      this.currentPhase = 'independent_assessment';
+      this.canAdvance = false;
+      return false;
+    }
+    this.currentPhase = 'independent_assessment';
+    this.currentTopicId = firstAssessmentQuestion.topicId;
+    this.activeQuestion = firstAssessmentQuestion;
+    this.canAdvance = false;
+    return true;
   }
 
   /**
