@@ -27,6 +27,8 @@ interface ActiveTutorSession {
   engine: TutorProgressionEngine;
   createdAt: number;
   lastActivityAt: number;
+  hintQuestionId: string | null;
+  hintsUsed: number;
 }
 
 const tutorSessions = new Map<string, ActiveTutorSession>();
@@ -150,6 +152,8 @@ app.post('/api/tutor/session/start', rateLimiter, (req, res) => {
     }),
     createdAt: Date.now(),
     lastActivityAt: Date.now(),
+    hintQuestionId: null,
+    hintsUsed: 0,
   };
   tutorSessions.set(sessionId, session);
   return res.json({ success: true, sessionId, snapshot: getTutorSessionSnapshot(session) });
@@ -167,8 +171,17 @@ app.post('/api/tutor/session/:sessionId/answer', rateLimiter, async (req, res) =
       return res.status(409).json({ success: false, error: 'This question is no longer active. Please use the current question shown.' });
     }
 
+    if (session.engine.completedQuestionIds.has(questionId)) {
+      return res.status(409).json({
+        success: false,
+        error: 'You have already answered this question correctly. Please continue to the next question.',
+      });
+    }
+
     const answeredQuestion = session.engine.activeQuestion;
     const step = session.engine.submitAnswer(studentMessage, questionId);
+    session.hintQuestionId = null;
+    session.hintsUsed = 0;
     let message = step.evalResult.tutorMessage;
 
     // Gemini may improve the wording, but the server engine remains authoritative for
@@ -219,6 +232,41 @@ Rewrite the feedback in warm, concise, age-appropriate New Zealand English. Do n
     console.error('Failed to process session answer:', error);
     return res.status(500).json({ success: false, error: 'Unable to check this answer right now.' });
   }
+});
+
+// Session-bound hints: the server chooses the active question and reveals one hint at a time.
+app.post('/api/tutor/session/:sessionId/hint', rateLimiter, (req, res) => {
+  const session = findTutorSession(req.params.sessionId);
+  if (!session) return res.status(404).json({ success: false, error: 'Learning session expired. Please start a new lesson.' });
+
+  const activeQuestion = session.engine.activeQuestion;
+  const requestedQuestionId = typeof req.body.questionId === 'string' ? req.body.questionId : '';
+  if (requestedQuestionId !== activeQuestion.id) {
+    return res.status(409).json({
+      success: false,
+      error: 'That question is no longer active. Please use the current question.',
+    });
+  }
+
+  if (session.hintQuestionId !== activeQuestion.id) {
+    session.hintQuestionId = activeQuestion.id;
+    session.hintsUsed = 0;
+  }
+
+  const availableHints = activeQuestion.hints.filter((hint) => typeof hint === 'string' && hint.trim());
+  const hint = availableHints.length
+    ? availableHints[Math.min(session.hintsUsed, availableHints.length - 1)]
+    : 'Start by identifying what the question is asking you to find. What information have you been given?';
+  session.hintsUsed++;
+
+  return res.json({
+    success: true,
+    data: {
+      message: hint,
+      hintNumber: Math.min(session.hintsUsed, Math.max(1, availableHints.length)),
+      hintsRemaining: Math.max(0, availableHints.length - session.hintsUsed),
+    },
+  });
 });
 
 app.post('/api/tutor/session/:sessionId/advance', rateLimiter, (req, res) => {
