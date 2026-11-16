@@ -65,10 +65,14 @@ export class TutorProgressionEngine {
       this.activeQuestion = targetQ;
       this.currentTopicId = targetQ.topicId;
     } else {
-      const firstQ = AUTHORITATIVE_QUESTION_BANK.find(
-        (q) => q.topicId === this.currentTopicId && q.stage === this.currentPhase
-      );
-      this.activeQuestion = firstQ || AUTHORITATIVE_QUESTION_BANK[0];
+      const firstQ =
+        AUTHORITATIVE_QUESTION_BANK.find(
+          (q) => q.topicId === this.currentTopicId && q.stage === this.currentPhase
+        ) ||
+        AUTHORITATIVE_QUESTION_BANK.find((q) => q.stage === this.currentPhase) ||
+        AUTHORITATIVE_QUESTION_BANK[0];
+      this.activeQuestion = firstQ;
+      this.currentTopicId = firstQ.topicId;
     }
 
     this.canAdvance = false;
