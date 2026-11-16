@@ -169,6 +169,7 @@ app.post('/api/tutor/session/:sessionId/answer', rateLimiter, async (req, res) =
       return res.status(409).json({ success: false, error: 'This question is no longer active. Please use the current question shown.' });
     }
 
+    const answeredQuestion = session.engine.activeQuestion;
     const step = session.engine.submitAnswer(studentMessage, questionId);
     let message = step.evalResult.tutorMessage;
 
@@ -177,7 +178,8 @@ app.post('/api/tutor/session/:sessionId/answer', rateLimiter, async (req, res) =
     if (ai) {
       try {
         const prompt = `Student answer: "${studentMessage}"
-Question: "${session.engine.stepHistory[session.engine.stepHistory.length - 1]?.questionId}"
+Question: "${answeredQuestion.prompt}"
+Math expression: "${answeredQuestion.mathExpression || ''}"
 Verified assessment: ${step.evalResult.assessment}
 Verified misconception: ${step.evalResult.misconception || 'None'}
 Required teaching action: ${step.evalResult.recommendedAction}
