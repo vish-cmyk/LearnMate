@@ -36,6 +36,15 @@ async function runSessionApiTests(): Promise<void> {
     assert(!('commonMisconceptions' in started.snapshot.activeQuestion), 'session response must not expose answer-pattern keys');
 
     const sessionId = started.sessionId as string;
+
+    const firstHintResponse = await post(baseUrl, `/api/tutor/session/${sessionId}/hint`, {
+      questionId: 'diag-1',
+    });
+    const firstHint = await firstHintResponse.json() as any;
+    assert(firstHintResponse.status === 200 && firstHint.success, 'server should provide a hint for the active question');
+    assert(typeof firstHint.data.message === 'string' && firstHint.data.message.length > 0, 'hint response should contain useful guidance');
+    assert(!('correctAnswer' in firstHint.data), 'hint response must not expose answer keys');
+
     const staleResponse = await post(baseUrl, `/api/tutor/session/${sessionId}/answer`, {
       questionId: 'diag-2',
       studentMessage: '6/15',
@@ -50,10 +59,28 @@ async function runSessionApiTests(): Promise<void> {
     assert(firstAnswerResponse.status === 200 && firstAnswer.data.assessment === 'correct', 'server must correctly assess the first answer');
     assert(firstAnswer.snapshot.totalAttempts === 1 && firstAnswer.snapshot.correctCount === 1, 'server must own the session counters');
 
+    const duplicateAnswerResponse = await post(baseUrl, `/api/tutor/session/${sessionId}/answer`, {
+      questionId: 'diag-1',
+      studentMessage: '3/8',
+    });
+    assert(duplicateAnswerResponse.status === 409, 'server must reject a duplicate correct submission');
+    const duplicateAnswer = await duplicateAnswerResponse.json() as any;
+    assert(duplicateAnswer.success === false, 'duplicate submission should return a clear conflict response');
+
     const advanceResponse = await post(baseUrl, `/api/tutor/session/${sessionId}/advance`);
     const advanced = await advanceResponse.json() as any;
     assert(advanceResponse.status === 200 && advanced.advanced, 'server should advance after a correct answer');
     assert(advanced.snapshot.activeQuestion.id === 'diag-2', 'server should choose the next diagnostic question');
+
+    const staleHintResponse = await post(baseUrl, `/api/tutor/session/${sessionId}/hint`, {
+      questionId: 'diag-1',
+    });
+    assert(staleHintResponse.status === 409, 'server must reject hints requested for a stale question');
+
+    const secondHintResponse = await post(baseUrl, `/api/tutor/session/${sessionId}/hint`, {
+      questionId: 'diag-2',
+    });
+    assert(secondHintResponse.status === 200, 'server should provide hints for the new active question');
 
     const secondAnswerResponse = await post(baseUrl, `/api/tutor/session/${sessionId}/answer`, {
       questionId: 'diag-2',
@@ -72,7 +99,7 @@ async function runSessionApiTests(): Promise<void> {
     const expiredResponse = await post(baseUrl, `/api/tutor/session/${sessionId}/advance`);
     assert(expiredResponse.status === 404, 'finished session should be removed from server memory');
 
-    console.log('  ✓ PASS: HTTP session lifecycle, server-owned assessment, and answer-key privacy');
+    console.log('  ✓ PASS: HTTP session lifecycle, server-bound hints, duplicate-answer protection, and answer-key privacy');
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());
