@@ -243,6 +243,7 @@ app.post('/api/tutor/session/:sessionId/finish', rateLimiter, (req, res) => {
   if (!session) return res.status(404).json({ success: false, error: 'Learning session expired. Please start a new lesson.' });
   const result = session.engine.leaveLessonEarly();
   result.summary.assessmentCompleted = Boolean(req.body.assessmentCompleted && session.engine.assessmentCompleted);
+  tutorSessions.delete(req.params.sessionId);
   return res.json({ success: true, summary: result.summary, records: result.records });
 });
 
