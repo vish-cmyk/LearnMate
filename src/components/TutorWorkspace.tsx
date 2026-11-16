@@ -342,23 +342,20 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     setChatMessages((prev) => [...prev, hintMsg]);
 
     try {
-      const response = await fetch('/api/tutor/chat', {
+      if (!serverSessionId || !sessionReady) throw new Error('Your learning session is not ready. Please wait a moment and try again.');
+      const response = await fetch(`/api/tutor/session/${serverSessionId}/hint`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          studentMessage: 'Can you give me a gentle hint for this question?',
-          questionId: activeQuestion.id,
-          currentTopic: activeQuestion.topicTitle,
-          studentLevel: 'standard',
-        }),
+        body: JSON.stringify({ questionId: activeQuestion.id }),
       });
       const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || 'I could not prepare a hint just now.');
       const tutorData = data.data;
 
       const tutorHintMsg: ChatMessage = {
         id: `tutor-${Date.now()}`,
         sender: 'tutor',
-        text: tutorData.message || (activeQuestion.hints[0] ?? 'Look closely at the denominator!'),
+        text: tutorData.message || 'Start by identifying what the question is asking you to find.',
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         recommendedAction: 'hint',
       };
