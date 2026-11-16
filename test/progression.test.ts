@@ -17,6 +17,7 @@ import { FRACTIONS_QUESTION_BANK } from '../src/data/fractionsCurriculum';
 import { AUTHORITATIVE_QUESTION_BANK } from '../src/server/authoritativeQuestionBank';
 import { evaluateStudentAnswer } from '../src/utils/fractionEvaluator';
 import { toClientQuestion } from '../src/server/publicQuestion';
+import { AuthoritativeFractionQuestion } from '../src/types';
 
 interface TestResult {
   name: string;
@@ -52,7 +53,7 @@ console.log('======================================================\n');
 // TEST -1: Browser question payloads never expose server answer keys
 // ---------------------------------------------------------------------------
 runTest('-1. Browser-safe questions exclude answer keys and correctness flags', () => {
-  const sourceQuestion = AUTHORITATIVE_QUESTION_BANK.find((question) => question.options && question.options.length > 0);
+  const sourceQuestion = AUTHORITATIVE_QUESTION_BANK.find((question) => question.options && question.options.length > 0) as AuthoritativeFractionQuestion | undefined;
   assert(sourceQuestion !== undefined, 'Question bank must include a multiple-choice question');
   const publicQuestion = toClientQuestion(sourceQuestion!);
   assert(!('correctAnswer' in publicQuestion), 'Correct answer must not be present in the browser payload');
