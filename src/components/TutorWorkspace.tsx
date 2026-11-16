@@ -798,15 +798,6 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
                     <ArrowRight className="w-3.5 h-3.5" />
                   </button>
                 ) : (
-                    <button
-                      onClick={handleNextQuestion}
-                      className="w-full py-2.5 px-4 bg-slate-900 text-white font-semibold text-xs rounded-lg hover:bg-slate-800 transition-colors shadow-xs flex items-center justify-center gap-2"
-                    >
-                      <span>Proceed to Next Question</span>
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </button>
-                  )
-                ) : (
                   /* Requirement 1: Removed 'Understood, Next'. Student MUST retry to demonstrate understanding. Separate leave option provided. */
                   <div className="space-y-2">
                     <button
