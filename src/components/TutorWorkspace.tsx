@@ -525,19 +525,9 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
             return (
               <div
                 key={topic.id}
-                className="group relative cursor-pointer"
-                onClick={() => {
-                  const hasUnresolvedGap = Object.values(conceptRecords).some((record) => record.hasUnresolvedMistake);
-                  if (hasUnresolvedGap && topic.id !== activeQuestion.topicId) return;
-                  setCurrentPhase('guided_practice');
-                  setCurrentTopicIdx(i);
-                  setCurrentQuestionIdx(0);
-                }}
-                aria-disabled={Object.values(conceptRecords).some((record) => record.hasUnresolvedMistake) && topic.id !== activeQuestion.topicId}
-                title={Object.values(conceptRecords).some((record) => record.hasUnresolvedMistake) && topic.id !== activeQuestion.topicId
-                  ? 'Resolve the outstanding practice gap before moving to another topic.'
-                  : `Open ${topic.title}`}
-              >
+                className="group relative"
+                title={topic.title}
+              
                 <div
                   className={`h-2 rounded-full transition-all ${
                     hasGap
