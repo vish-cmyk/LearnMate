@@ -15,6 +15,7 @@ import { TutorProgressionEngine } from '../src/utils/tutorProgressionEngine';
 import { ACCEPTANCE_SCENARIOS } from '../src/data/acceptanceScenarios';
 import { FRACTIONS_QUESTION_BANK } from '../src/data/fractionsCurriculum';
 import { evaluateStudentAnswer } from '../src/utils/fractionEvaluator';
+import { toClientQuestion } from '../src/server/publicQuestion';
 
 interface TestResult {
   name: string;
@@ -45,6 +46,22 @@ function runTest(name: string, fn: () => void) {
 console.log('\n======================================================');
 console.log('  LearnMate AI Adaptive Engine Automated Test Suite   ');
 console.log('======================================================\n');
+
+// ---------------------------------------------------------------------------
+// TEST -1: Browser question payloads never expose server answer keys
+// ---------------------------------------------------------------------------
+runTest('-1. Browser-safe questions exclude answer keys and correctness flags', () => {
+  const sourceQuestion = FRACTIONS_QUESTION_BANK.find((question) => question.options && question.options.length > 0);
+  assert(sourceQuestion !== undefined, 'Question bank must include a multiple-choice question');
+  const publicQuestion = toClientQuestion(sourceQuestion!);
+  assert(!('correctAnswer' in publicQuestion), 'Correct answer must not be present in the browser payload');
+  assert(!('unsimplifiedAnswer' in publicQuestion), 'Unsimplified answer must not be present in the browser payload');
+  assert(!('simplifiedAnswer' in publicQuestion), 'Simplified answer must not be present in the browser payload');
+  assert(
+    (publicQuestion.options || []).every((option) => !('isCorrect' in option)),
+    'Multiple-choice correctness flags must not be present in the browser payload'
+  );
+});
 
 // ---------------------------------------------------------------------------
 // TEST 0: Multiple-choice answers must match a complete option, not a substring
