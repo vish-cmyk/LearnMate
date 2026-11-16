@@ -70,7 +70,6 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     : 0;
 
   const [currentQuestionIdx, setCurrentQuestionIdx] = useState<number>(startingQuestionIdx);
-  const [overrideQuestionId, setOverrideQuestionId] = useState<string | null>(initialQuestionId || null);
   const [serverSessionId, setServerSessionId] = useState<string | null>(null);
   const [serverQuestion, setServerQuestion] = useState<FractionQuestion | null>(null);
   const [pendingServerQuestion, setPendingServerQuestion] = useState<FractionQuestion | null>(null);
@@ -79,14 +78,11 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
 
   const activeQuestion: FractionQuestion =
     serverQuestion ||
-    (overrideQuestionId ? FRACTIONS_QUESTION_BANK.find((q) => q.id === overrideQuestionId) : null) ||
     activeQuestions[currentQuestionIdx] ||
     activeQuestions[0] ||
     FRACTIONS_QUESTION_BANK[0];
 
   // Track questions already answered so challenge routing never sends a student backwards.
-  const [completedQuestionIds, setCompletedQuestionIds] = useState<Set<string>>(() => new Set());
-
   const applyServerSnapshot = (snapshot: any, deferQuestion = false) => {
     if (!snapshot) return;
     const nextQuestion = snapshot.activeQuestion as FractionQuestion | undefined;
@@ -147,8 +143,6 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
         }]);
       });
   }, []);
-
-  const availableChallenge = null;
 
   // Student inputs
   const [studentInput, setStudentInput] = useState<string>('');
@@ -538,7 +532,6 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
                   setCurrentPhase('guided_practice');
                   setCurrentTopicIdx(i);
                   setCurrentQuestionIdx(0);
-                  setOverrideQuestionId(null);
                 }}
                 aria-disabled={Object.values(conceptRecords).some((record) => record.hasUnresolvedMistake) && topic.id !== activeQuestion.topicId}
                 title={Object.values(conceptRecords).some((record) => record.hasUnresolvedMistake) && topic.id !== activeQuestion.topicId
@@ -789,36 +782,22 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
                 {!hasAnsweredCurrent ? (
                   <button
                     onClick={handleSubmitAnswer}
-                    disabled={isSubmitting || (!selectedOption && !inputNum && !studentInput)}
+                    disabled={!sessionReady || isSubmitting || (!selectedOption && !inputNum && !studentInput)}
                     className="w-full py-2.5 px-4 bg-sky-600 text-white font-semibold text-xs rounded-lg hover:bg-sky-700 transition-colors shadow-xs disabled:opacity-40 flex items-center justify-center gap-2"
                   >
                     <span>{isSubmitting ? 'Checking with Tutor...' : 'Submit Answer'}</span>
                     <Send className="w-3.5 h-3.5" />
                   </button>
                 ) : lastAttemptCorrect ? (
-                  currentConceptRecord.consecutiveCorrect >= 2 && availableChallenge ? (
-                    <div className="space-y-2">
-                      <button
-                        onClick={handleLoadChallengeQuestion}
-                        className="w-full py-2.5 px-4 bg-sky-600 text-white font-semibold text-xs rounded-lg hover:bg-sky-700 transition-colors shadow-xs flex items-center justify-center gap-2"
-                      >
-                        <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-                        <span>Take on Harder Challenge Question</span>
-                        <ArrowRight className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={handleMoveToNextTopic}
-                        disabled={Object.values(conceptRecords).some((record) => record.hasUnresolvedMistake)}
-                        title={Object.values(conceptRecords).some((record) => record.hasUnresolvedMistake)
-                          ? 'Resolve all outstanding learning gaps before moving forward.'
-                          : 'Move to the next topic'}
-                        className="w-full py-2 px-4 bg-slate-100 text-slate-700 font-semibold text-xs rounded-lg hover:bg-slate-200 transition-colors border border-slate-200 flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-                      >
-                        <span>Move Forward to Next Topic</span>
-                        <ArrowRight className="w-3 h-3 text-slate-400" />
-                      </button>
-                    </div>
-                  ) : (
+                  <button
+                    onClick={handleNextQuestion}
+                    disabled={isSubmitting || !sessionReady}
+                    className="w-full py-2.5 px-4 bg-slate-900 text-white font-semibold text-xs rounded-lg hover:bg-slate-800 transition-colors shadow-xs flex items-center justify-center gap-2 disabled:opacity-40"
+                  >
+                    <span>Proceed to Next Question</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                ) : (
                     <button
                       onClick={handleNextQuestion}
                       className="w-full py-2.5 px-4 bg-slate-900 text-white font-semibold text-xs rounded-lg hover:bg-slate-800 transition-colors shadow-xs flex items-center justify-center gap-2"
