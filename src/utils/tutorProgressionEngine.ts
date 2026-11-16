@@ -159,7 +159,7 @@ export class TutorProgressionEngine {
 
       // Requirement 2: After two consecutive correct answers on a concept,
       // actual adaptive question selection: offer harder question or move forward!
-      if (currentConcept.consecutiveCorrect >= 2) {
+      if (this.currentPhase === 'guided_practice' && currentConcept.consecutiveCorrect >= 2) {
         currentConcept.demonstratedUnderstanding = true;
         // Look for an unattempted challenge question for this concept in authoritative bank
         const challengeQ = AUTHORITATIVE_QUESTION_BANK.find(
@@ -187,7 +187,10 @@ export class TutorProgressionEngine {
         }
       } else {
         const score = Math.round((currentConcept.successes / currentConcept.attempts) * 100);
-        if (score >= 60) {
+        if (this.currentPhase === 'independent_assessment' && currentConcept.consecutiveCorrect >= 2 && score >= 80) {
+          currentConcept.status = 'mastered';
+          currentConcept.demonstratedUnderstanding = true;
+        } else if (score >= 60 && currentConcept.status !== 'mastered') {
           currentConcept.status = 'understood';
         }
       }
