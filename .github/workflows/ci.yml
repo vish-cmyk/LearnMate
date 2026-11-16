@@ -24,3 +24,19 @@ jobs:
         run: npm test
       - name: Build production bundle
         run: npm run build
+
+  bun-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+      - name: Install dependencies from bun.lock
+        run: bun install
+      - name: Type-check
+        run: bun run lint
+      - name: Run progression tests
+        run: bun run test
+      - name: Build production bundle
+        run: bun run build
