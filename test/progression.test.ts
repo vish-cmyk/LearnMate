@@ -14,6 +14,7 @@
 import { TutorProgressionEngine } from '../src/utils/tutorProgressionEngine';
 import { ACCEPTANCE_SCENARIOS } from '../src/data/acceptanceScenarios';
 import { FRACTIONS_QUESTION_BANK } from '../src/data/fractionsCurriculum';
+import { evaluateStudentAnswer } from '../src/utils/fractionEvaluator';
 
 interface TestResult {
   name: string;
@@ -44,6 +45,33 @@ function runTest(name: string, fn: () => void) {
 console.log('\n======================================================');
 console.log('  LearnMate AI Adaptive Engine Automated Test Suite   ');
 console.log('======================================================\n');
+
+// ---------------------------------------------------------------------------
+// TEST 0: Multiple-choice answers must match a complete option, not a substring
+// ---------------------------------------------------------------------------
+runTest('0. Multiple-choice validation rejects ambiguous partial text', () => {
+  const question = {
+    id: 'mc-exact-match',
+    topicId: 'equivalent-fractions',
+    topicTitle: 'Equivalent Fractions',
+    stage: 'guided_practice' as const,
+    difficulty: 'standard' as const,
+    prompt: 'Choose the correct option.',
+    questionType: 'multiple_choice' as const,
+    correctAnswer: 'B',
+    hints: [],
+    explanation: 'Test question.',
+    options: [
+      { label: '10 parts', value: 'A', isCorrect: false },
+      { label: '19 parts', value: 'B', isCorrect: true },
+    ],
+  };
+
+  const ambiguous = evaluateStudentAnswer({ studentMessage: '1', currentQuestion: question });
+  assert(ambiguous.assessment === 'incorrect', 'A partial substring must not select an option');
+  const exact = evaluateStudentAnswer({ studentMessage: '19 parts', currentQuestion: question });
+  assert(exact.assessment === 'correct', 'An exact option label must be accepted');
+});
 
 // ---------------------------------------------------------------------------
 // TEST 1: Correct answers and increasing difficulty (Adaptive Question Selection)
