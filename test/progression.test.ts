@@ -74,6 +74,30 @@ runTest('0. Multiple-choice validation rejects ambiguous partial text', () => {
 });
 
 // ---------------------------------------------------------------------------
+// TEST 0B: Server progression owns diagnostic sequencing and queued questions
+// ---------------------------------------------------------------------------
+runTest('0B. Server progression sequences diagnostics and serves queued challenges', () => {
+  const diagnosticEngine = new TutorProgressionEngine({
+    initialPhase: 'diagnostic',
+    initialQuestionId: 'diag-1',
+  });
+  const diagnosticAnswer = diagnosticEngine.submitAnswer('3/8', 'diag-1');
+  assert(diagnosticAnswer.evalResult.isCorrect, 'First diagnostic answer must be correct');
+  assert(diagnosticEngine.advanceToNextQuestion(), 'Diagnostic flow should advance');
+  assert(diagnosticEngine.activeQuestion.id === 'diag-2', 'Next diagnostic must be selected by the server engine');
+
+  const challengeEngine = new TutorProgressionEngine({
+    initialTopicId: 'equivalent-fractions',
+    initialQuestionId: 'prac-equiv-1',
+  });
+  challengeEngine.submitAnswer('B', 'prac-equiv-1');
+  const second = challengeEngine.submitAnswer('20/35', 'prac-equiv-2');
+  assert(second.activeQuestionAfterTurn.id === 'prac-equiv-challenge', 'Second correct answer should queue the challenge');
+  assert(challengeEngine.advanceToNextQuestion(), 'Queued challenge should be presented');
+  assert(challengeEngine.activeQuestion.id === 'prac-equiv-challenge', 'Advancing must not skip a queued challenge');
+});
+
+// ---------------------------------------------------------------------------
 // TEST 1: Correct answers and increasing difficulty (Adaptive Question Selection)
 // ---------------------------------------------------------------------------
 runTest('1. Correct answers and increasing difficulty (escalates to challenge)', () => {
