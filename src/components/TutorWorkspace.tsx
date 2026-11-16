@@ -78,12 +78,16 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
     activeQuestions[0] ||
     FRACTIONS_QUESTION_BANK[0];
 
-  // Check if unattempted challenge question exists for current concept
+  // Track questions already answered so challenge routing never sends a student backwards.
+  const [completedQuestionIds, setCompletedQuestionIds] = useState<Set<string>>(() => new Set());
+
+  // Only offer a challenge that has not already been answered in this lesson.
   const availableChallenge = FRACTIONS_QUESTION_BANK.find(
     (q) =>
       q.topicId === activeQuestion.topicId &&
       q.difficulty === 'challenge' &&
-      q.id !== activeQuestion.id
+      q.id !== activeQuestion.id &&
+      !completedQuestionIds.has(q.id)
   );
 
   // Student inputs
@@ -240,6 +244,7 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
       setHasAnsweredCurrent(true);
 
       if (isCorrect) {
+        setCompletedQuestionIds((prev) => new Set(prev).add(activeQuestion.id));
         setCorrectCount((prev) => prev + 1);
 
         // Update concept record with recovery and consecutive tracking
@@ -678,12 +683,12 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
         setCurrentQuestionIdx((prev) => prev + 1);
         setOverrideQuestionId(null);
       } else {
-        handleCompleteLesson();
+        handleCompleteLesson(true);
       }
     }
   };
 
-  const handleCompleteLesson = () => {
+  const handleCompleteLesson = (assessmentCompleted = false) => {
     const recordsList = Object.values(conceptRecords);
 
     // Requirement 3 & 5: Never claim concept is mastered if hasUnresolvedMistake is true!
@@ -703,12 +708,14 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
       accuracyPercentage: totalAttempts > 0 ? Math.round((correctCount / totalAttempts) * 100) : 0,
       conceptsMastered: masteredList,
       conceptsRequiringPractice: needsPracticeList,
-      addressedMisconceptions: currentConceptRecord.misconceptionsEncountered,
+      addressedMisconceptions: Array.from(
+        new Set(recordsList.flatMap((record) => record.misconceptionsEncountered))
+      ),
       recommendedNextSteps: [
         'Explore Mixed Numbers & Improper Fractions (e.g. 7/4 = 1 3/4)',
         'Connect Fractions to Decimals & Percentages (Year 9 Number Strand)',
       ],
-      assessmentCompleted: currentPhase === 'independent_assessment',
+      assessmentCompleted,
     };
 
     onFinishLesson(summary, recordsList);
@@ -798,10 +805,17 @@ export const TutorWorkspace: React.FC<TutorWorkspaceProps> = ({
                 key={topic.id}
                 className="group relative cursor-pointer"
                 onClick={() => {
+                  const hasUnresolvedGap = Object.values(conceptRecords).some((record) => record.hasUnresolvedMistake);
+                  if (hasUnresolvedGap && topic.id !== activeQuestion.topicId) return;
                   setCurrentPhase('guided_practice');
                   setCurrentTopicIdx(i);
                   setCurrentQuestionIdx(0);
+                  setOverrideQuestionId(null);
                 }}
+                aria-disabled={Object.values(conceptRecords).some((record) => record.hasUnresolvedMistake) && topic.id !== activeQuestion.topicId}
+                title={Object.values(conceptRecords).some((record) => record.hasUnresolvedMistake) && topic.id !== activeQuestion.topicId
+                  ? 'Resolve the outstanding practice gap before moving to another topic.'
+                  : `Open ${topic.title}`}
               >
                 <div
                   className={`h-2 rounded-full transition-all ${
